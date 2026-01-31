@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 
@@ -10,7 +11,37 @@ import (
 	"dagger/tapes/internal/dagger"
 )
 
-// Build and return directory of go binaries
+const (
+	zigVersion string = "0.15.2"
+
+	// osxcross image provides the macOS SDK and cross-compilation toolchain
+	// for building CGO-enabled Go binaries targeting darwin from Linux containers.
+	osxcrossImage string = "crazymax/osxcross:latest-ubuntu"
+)
+
+type buildTarget struct {
+	goos       string
+	goarch     string
+	cc         string
+	cxx        string
+	cgoFlags   string
+	cgoLdFlags string
+}
+
+func zigArch() string {
+	switch runtime.GOARCH {
+	case "arm64":
+		return "aarch64"
+	case "amd64":
+		return "x86_64"
+	default:
+		return runtime.GOARCH
+	}
+}
+
+// Build and return directory of go binaries for all platforms.
+// Linux targets are cross-compiled using Zig as the C toolchain.
+// Darwin targets are cross-compiled using osxcross (macOS SDK + clang).
 func (t *Tapes) Build(
 	ctx context.Context,
 
@@ -19,41 +50,117 @@ func (t *Tapes) Build(
 	// +default="-s -w"
 	ldflags string,
 ) *dagger.Directory {
-	// define build matrix
-	gooses := []string{"linux", "darwin"}
-	goarches := []string{"amd64", "arm64"}
-
-	// create empty directory to put build artifacts
 	outputs := dag.Directory()
+	outputs = t.buildLinux(outputs, ldflags)
+	outputs = t.buildDarwin(outputs, ldflags)
+	return outputs
+}
+
+// buildLinux compiles Go binaries for linux/amd64 and linux/arm64
+// using Zig as the cross-compilation C toolchain.
+func (t *Tapes) buildLinux(outputs *dagger.Directory, ldflags string) *dagger.Directory {
+	cgoFlags := "-I/opt/sqlite -fno-sanitize=all"
+	cgoLdFlags := "-fno-sanitize=all"
+
+	targets := []buildTarget{
+		{"linux", "amd64", "zig cc -target x86_64-linux-gnu", "zig c++ -target x86_64-linux-gnu", cgoFlags, cgoLdFlags},
+		{"linux", "arm64", "zig cc -target aarch64-linux-gnu", "zig c++ -target aarch64-linux-gnu", cgoFlags, cgoLdFlags},
+	}
+
+	// Build zig download URL based on host architecture
+	zigArch := zigArch()
+	zigDownloadURL := fmt.Sprintf("https://ziglang.org/download/%s/zig-%s-linux-%s.tar.xz", zigVersion, zigArch, zigVersion)
+	zigDir := fmt.Sprintf("zig-%s-linux-%s", zigArch, zigVersion)
 
 	golang := dag.Container().
-		From("golang:1.25-alpine").
-		WithEnvVariable("CGO_ENABLED", "0").
-		WithEnvVariable("GOEXPERIMENT", "jsonv2").
+		From("golang:1.25-bookworm").
+		WithExec([]string{"apt-get", "update"}).
+		WithExec([]string{"apt-get", "install", "-y", "libsqlite3-dev", "xz-utils"}).
+		WithExec([]string{"mkdir", "-p", "/opt/sqlite"}).
+		WithExec([]string{"cp", "/usr/include/sqlite3.h", "/opt/sqlite/"}).
+		WithExec([]string{"cp", "/usr/include/sqlite3ext.h", "/opt/sqlite/"}).
+		WithExec([]string{"sh", "-c", fmt.Sprintf("curl -L %s | tar -xJ -C /usr/local", zigDownloadURL)}).
+		WithEnvVariable("PATH", fmt.Sprintf("/usr/local/%s:$PATH", zigDir), dagger.ContainerWithEnvVariableOpts{Expand: true}).
 		WithMountedCache("/go/pkg/mod", dag.CacheVolume("go-mod")).
 		WithMountedCache("/root/.cache/go-build", dag.CacheVolume("go-build")).
 		WithDirectory("/src", t.Source).
 		WithWorkdir("/src")
 
-	for _, goos := range gooses {
-		for _, goarch := range goarches {
-			// create directory for each OS and architecture
-			path := fmt.Sprintf("%s/%s/", goos, goarch)
+	for _, target := range targets {
+		path := fmt.Sprintf("%s/%s/", target.goos, target.goarch)
 
-			// build artifact
-			build := golang.
-				WithEnvVariable("GOOS", goos).
-				WithEnvVariable("GOARCH", goarch).
-				WithExec([]string{"go", "build", "-ldflags", ldflags, "-o", path, "./cli/tapes"}).
-				WithExec([]string{"go", "build", "-ldflags", ldflags, "-o", path, "./cli/tapesprox"}).
-				WithExec([]string{"go", "build", "-ldflags", ldflags, "-o", path, "./cli/tapesapi"})
+		build := golang.
+			WithEnvVariable("CGO_ENABLED", "1").
+			WithEnvVariable("GOEXPERIMENT", "jsonv2").
+			WithEnvVariable("GOOS", target.goos).
+			WithEnvVariable("GOARCH", target.goarch).
+			WithEnvVariable("CC", target.cc).
+			WithEnvVariable("CXX", target.cxx).
+			WithEnvVariable("CGO_CFLAGS", target.cgoFlags).
+			WithEnvVariable("CGO_LDFLAGS", target.cgoLdFlags).
+			WithExec([]string{"go", "build", "-ldflags", ldflags, "-o", path, "./cli/tapes"}).
+			WithExec([]string{"go", "build", "-ldflags", ldflags, "-o", path, "./cli/tapesprox"}).
+			WithExec([]string{"go", "build", "-ldflags", ldflags, "-o", path, "./cli/tapesapi"})
 
-			// add build to outputs
-			outputs = outputs.WithDirectory(path, build.Directory(path))
-		}
+		outputs = outputs.WithDirectory(path, build.Directory(path))
 	}
 
-	// return build directory
+	return outputs
+}
+
+// buildDarwin compiles Go binaries for darwin/amd64 and darwin/arm64
+// using the osxcross toolchain which provides the macOS SDK and clang
+// cross-compilers inside a Linux container.
+func (t *Tapes) buildDarwin(outputs *dagger.Directory, ldflags string) *dagger.Directory {
+	cgoFlags := "-I/opt/sqlite"
+	cgoLdFlags := ""
+
+	targets := []buildTarget{
+		{"darwin", "amd64", "o64-clang", "o64-clang++", cgoFlags, cgoLdFlags},
+		{"darwin", "arm64", "oa64-clang", "oa64-clang++", cgoFlags, cgoLdFlags},
+	}
+
+	// Pull the osxcross toolchain (macOS SDK + clang cross-compilers)
+	osxcross := dag.Container().
+		From(osxcrossImage).
+		Directory("/osxcross")
+
+	// Use Debian Trixie as the base for darwin builds because the osxcross
+	// toolchain binaries require GLIBC 2.38+ (Bookworm only has 2.36).
+	golang := dag.Container().
+		From("golang:1.25-trixie").
+		WithExec([]string{"apt-get", "update"}).
+		WithExec([]string{"apt-get", "install", "-y", "clang", "lld", "libsqlite3-dev"}).
+		WithExec([]string{"mkdir", "-p", "/opt/sqlite"}).
+		WithExec([]string{"cp", "/usr/include/sqlite3.h", "/opt/sqlite/"}).
+		WithExec([]string{"cp", "/usr/include/sqlite3ext.h", "/opt/sqlite/"}).
+		WithDirectory("/osxcross", osxcross).
+		WithEnvVariable("PATH", "/osxcross/bin:$PATH", dagger.ContainerWithEnvVariableOpts{Expand: true}).
+		WithEnvVariable("LD_LIBRARY_PATH", "/osxcross/lib:$LD_LIBRARY_PATH", dagger.ContainerWithEnvVariableOpts{Expand: true}).
+		WithMountedCache("/go/pkg/mod", dag.CacheVolume("go-mod")).
+		WithMountedCache("/root/.cache/go-build", dag.CacheVolume("go-build")).
+		WithDirectory("/src", t.Source).
+		WithWorkdir("/src")
+
+	for _, target := range targets {
+		path := fmt.Sprintf("%s/%s/", target.goos, target.goarch)
+
+		build := golang.
+			WithEnvVariable("CGO_ENABLED", "1").
+			WithEnvVariable("GOEXPERIMENT", "jsonv2").
+			WithEnvVariable("GOOS", target.goos).
+			WithEnvVariable("GOARCH", target.goarch).
+			WithEnvVariable("CC", target.cc).
+			WithEnvVariable("CXX", target.cxx).
+			WithEnvVariable("CGO_CFLAGS", target.cgoFlags).
+			WithEnvVariable("CGO_LDFLAGS", target.cgoLdFlags).
+			WithExec([]string{"go", "build", "-ldflags", ldflags, "-o", path, "./cli/tapes"}).
+			WithExec([]string{"go", "build", "-ldflags", ldflags, "-o", path, "./cli/tapesprox"}).
+			WithExec([]string{"go", "build", "-ldflags", ldflags, "-o", path, "./cli/tapesapi"})
+
+		outputs = outputs.WithDirectory(path, build.Directory(path))
+	}
+
 	return outputs
 }
 
