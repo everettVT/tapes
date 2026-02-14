@@ -333,6 +333,26 @@ func (_u *NodeUpdate) ClearPromptDurationNs() *NodeUpdate {
 	return _u
 }
 
+// SetProject sets the "project" field.
+func (_u *NodeUpdate) SetProject(v string) *NodeUpdate {
+	_u.mutation.SetProject(v)
+	return _u
+}
+
+// SetNillableProject sets the "project" field if the given value is not nil.
+func (_u *NodeUpdate) SetNillableProject(v *string) *NodeUpdate {
+	if v != nil {
+		_u.SetProject(*v)
+	}
+	return _u
+}
+
+// ClearProject clears the value of the "project" field.
+func (_u *NodeUpdate) ClearProject() *NodeUpdate {
+	_u.mutation.ClearProject()
+	return _u
+}
+
 // SetParentID sets the "parent" edge to the Node entity by ID.
 func (_u *NodeUpdate) SetParentID(id string) *NodeUpdate {
 	_u.mutation.SetParentID(id)
@@ -532,6 +552,12 @@ func (_u *NodeUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.PromptDurationNsCleared() {
 		_spec.ClearField(node.FieldPromptDurationNs, field.TypeInt64)
+	}
+	if value, ok := _u.mutation.Project(); ok {
+		_spec.SetField(node.FieldProject, field.TypeString, value)
+	}
+	if _u.mutation.ProjectCleared() {
+		_spec.ClearField(node.FieldProject, field.TypeString)
 	}
 	if _u.mutation.ParentCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -932,6 +958,26 @@ func (_u *NodeUpdateOne) ClearPromptDurationNs() *NodeUpdateOne {
 	return _u
 }
 
+// SetProject sets the "project" field.
+func (_u *NodeUpdateOne) SetProject(v string) *NodeUpdateOne {
+	_u.mutation.SetProject(v)
+	return _u
+}
+
+// SetNillableProject sets the "project" field if the given value is not nil.
+func (_u *NodeUpdateOne) SetNillableProject(v *string) *NodeUpdateOne {
+	if v != nil {
+		_u.SetProject(*v)
+	}
+	return _u
+}
+
+// ClearProject clears the value of the "project" field.
+func (_u *NodeUpdateOne) ClearProject() *NodeUpdateOne {
+	_u.mutation.ClearProject()
+	return _u
+}
+
 // SetParentID sets the "parent" edge to the Node entity by ID.
 func (_u *NodeUpdateOne) SetParentID(id string) *NodeUpdateOne {
 	_u.mutation.SetParentID(id)
@@ -1161,6 +1207,12 @@ func (_u *NodeUpdateOne) sqlSave(ctx context.Context) (_node *Node, err error) {
 	}
 	if _u.mutation.PromptDurationNsCleared() {
 		_spec.ClearField(node.FieldPromptDurationNs, field.TypeInt64)
+	}
+	if value, ok := _u.mutation.Project(); ok {
+		_spec.SetField(node.FieldProject, field.TypeString, value)
+	}
+	if _u.mutation.ProjectCleared() {
+		_spec.ClearField(node.FieldProject, field.TypeString)
 	}
 	if _u.mutation.ParentCleared() {
 		edge := &sqlgraph.EdgeSpec{

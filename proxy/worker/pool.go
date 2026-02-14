@@ -52,6 +52,9 @@ type Config struct {
 	// QueueSize is the capacity of the buffered job channel (defaults to 256).
 	QueueSize uint
 
+	// Project is the git repository or project name to tag on stored nodes.
+	Project string
+
 	// Logger is the provided zap logger
 	Logger *zap.Logger
 }
@@ -175,7 +178,7 @@ func (p *Pool) storeConversationTurn(ctx context.Context, job Job) (string, []*m
 			AgentName: job.AgentName,
 		}
 
-		node := merkle.NewNode(bucket, parent)
+		node := merkle.NewNode(bucket, parent, merkle.NodeMeta{Project: p.config.Project})
 
 		isNew, err := p.config.Driver.Put(ctx, node)
 		if err != nil {
@@ -210,6 +213,7 @@ func (p *Pool) storeConversationTurn(ctx context.Context, job Job) (string, []*m
 		merkle.NodeMeta{
 			StopReason: job.Resp.StopReason,
 			Usage:      job.Resp.Usage,
+			Project:    p.config.Project,
 		},
 	)
 

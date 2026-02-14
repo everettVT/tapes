@@ -52,6 +52,7 @@ type NodeMutation struct {
 	addtotal_duration_ns  *int64
 	prompt_duration_ns    *int64
 	addprompt_duration_ns *int64
+	project               *string
 	created_at            *time.Time
 	clearedFields         map[string]struct{}
 	parent                *string
@@ -975,6 +976,55 @@ func (m *NodeMutation) ResetPromptDurationNs() {
 	delete(m.clearedFields, node.FieldPromptDurationNs)
 }
 
+// SetProject sets the "project" field.
+func (m *NodeMutation) SetProject(s string) {
+	m.project = &s
+}
+
+// Project returns the value of the "project" field in the mutation.
+func (m *NodeMutation) Project() (r string, exists bool) {
+	v := m.project
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldProject returns the old "project" field's value of the Node entity.
+// If the Node object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *NodeMutation) OldProject(ctx context.Context) (v *string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldProject is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldProject requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldProject: %w", err)
+	}
+	return oldValue.Project, nil
+}
+
+// ClearProject clears the value of the "project" field.
+func (m *NodeMutation) ClearProject() {
+	m.project = nil
+	m.clearedFields[node.FieldProject] = struct{}{}
+}
+
+// ProjectCleared returns if the "project" field was cleared in this mutation.
+func (m *NodeMutation) ProjectCleared() bool {
+	_, ok := m.clearedFields[node.FieldProject]
+	return ok
+}
+
+// ResetProject resets all changes to the "project" field.
+func (m *NodeMutation) ResetProject() {
+	m.project = nil
+	delete(m.clearedFields, node.FieldProject)
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (m *NodeMutation) SetCreatedAt(t time.Time) {
 	m.created_at = &t
@@ -1139,7 +1189,7 @@ func (m *NodeMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *NodeMutation) Fields() []string {
-	fields := make([]string, 0, 15)
+	fields := make([]string, 0, 16)
 	if m.parent != nil {
 		fields = append(fields, node.FieldParentHash)
 	}
@@ -1182,6 +1232,9 @@ func (m *NodeMutation) Fields() []string {
 	if m.prompt_duration_ns != nil {
 		fields = append(fields, node.FieldPromptDurationNs)
 	}
+	if m.project != nil {
+		fields = append(fields, node.FieldProject)
+	}
 	if m.created_at != nil {
 		fields = append(fields, node.FieldCreatedAt)
 	}
@@ -1221,6 +1274,8 @@ func (m *NodeMutation) Field(name string) (ent.Value, bool) {
 		return m.TotalDurationNs()
 	case node.FieldPromptDurationNs:
 		return m.PromptDurationNs()
+	case node.FieldProject:
+		return m.Project()
 	case node.FieldCreatedAt:
 		return m.CreatedAt()
 	}
@@ -1260,6 +1315,8 @@ func (m *NodeMutation) OldField(ctx context.Context, name string) (ent.Value, er
 		return m.OldTotalDurationNs(ctx)
 	case node.FieldPromptDurationNs:
 		return m.OldPromptDurationNs(ctx)
+	case node.FieldProject:
+		return m.OldProject(ctx)
 	case node.FieldCreatedAt:
 		return m.OldCreatedAt(ctx)
 	}
@@ -1368,6 +1425,13 @@ func (m *NodeMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetPromptDurationNs(v)
+		return nil
+	case node.FieldProject:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetProject(v)
 		return nil
 	case node.FieldCreatedAt:
 		v, ok := value.(time.Time)
@@ -1511,6 +1575,9 @@ func (m *NodeMutation) ClearedFields() []string {
 	if m.FieldCleared(node.FieldPromptDurationNs) {
 		fields = append(fields, node.FieldPromptDurationNs)
 	}
+	if m.FieldCleared(node.FieldProject) {
+		fields = append(fields, node.FieldProject)
+	}
 	return fields
 }
 
@@ -1567,6 +1634,9 @@ func (m *NodeMutation) ClearField(name string) error {
 	case node.FieldPromptDurationNs:
 		m.ClearPromptDurationNs()
 		return nil
+	case node.FieldProject:
+		m.ClearProject()
+		return nil
 	}
 	return fmt.Errorf("unknown Node nullable field %s", name)
 }
@@ -1616,6 +1686,9 @@ func (m *NodeMutation) ResetField(name string) error {
 		return nil
 	case node.FieldPromptDurationNs:
 		m.ResetPromptDurationNs()
+		return nil
+	case node.FieldProject:
+		m.ResetProject()
 		return nil
 	case node.FieldCreatedAt:
 		m.ResetCreatedAt()

@@ -200,6 +200,20 @@ func (_c *NodeCreate) SetNillablePromptDurationNs(v *int64) *NodeCreate {
 	return _c
 }
 
+// SetProject sets the "project" field.
+func (_c *NodeCreate) SetProject(v string) *NodeCreate {
+	_c.mutation.SetProject(v)
+	return _c
+}
+
+// SetNillableProject sets the "project" field if the given value is not nil.
+func (_c *NodeCreate) SetNillableProject(v *string) *NodeCreate {
+	if v != nil {
+		_c.SetProject(*v)
+	}
+	return _c
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_c *NodeCreate) SetCreatedAt(v time.Time) *NodeCreate {
 	_c.mutation.SetCreatedAt(v)
@@ -391,6 +405,10 @@ func (_c *NodeCreate) createSpec() (*Node, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.PromptDurationNs(); ok {
 		_spec.SetField(node.FieldPromptDurationNs, field.TypeInt64, value)
 		_node.PromptDurationNs = &value
+	}
+	if value, ok := _c.mutation.Project(); ok {
+		_spec.SetField(node.FieldProject, field.TypeString, value)
+		_node.Project = &value
 	}
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(node.FieldCreatedAt, field.TypeTime, value)

@@ -30,6 +30,9 @@ type Config struct {
 	// Embedder is an optional embedder for generating embeddings.
 	// Required if VectorDriver is set.
 	Embedder embeddings.Embedder
+
+	// Project is the git repository or project name to tag on stored nodes.
+	Project string
 }
 
 // AgentRoute defines proxy routing for a specific agent.

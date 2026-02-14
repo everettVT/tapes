@@ -89,6 +89,7 @@ func New(config Config, driver storage.Driver, logger *zap.Logger) (*Proxy, erro
 		Driver:       driver,
 		VectorDriver: config.VectorDriver,
 		Embedder:     config.Embedder,
+		Project:      config.Project,
 		Logger:       logger,
 	})
 	if err != nil {
