@@ -7,6 +7,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/papercomputeco/tapes/pkg/llm"
+	"github.com/papercomputeco/tapes/pkg/merkle"
 )
 
 // HistoryResponse contains the conversation history for a given node.
@@ -120,6 +121,38 @@ func (s *Server) handleGetHistory(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(history)
+}
+
+// PushResponse is returned by the POST /dag/nodes endpoint.
+type PushResponse struct {
+	New       int `json:"new"`
+	Duplicate int `json:"duplicate"`
+	Errors    int `json:"errors"`
+}
+
+// handlePushNodes accepts a JSON array of nodes and stores them.
+func (s *Server) handlePushNodes(c *fiber.Ctx) error {
+	var nodes []*merkle.Node
+	if err := c.BodyParser(&nodes); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(llm.ErrorResponse{Error: "invalid JSON body"})
+	}
+
+	resp := PushResponse{}
+	for _, n := range nodes {
+		isNew, err := s.driver.Put(c.Context(), n)
+		if err != nil {
+			s.logger.Warn("failed to put node", zap.String("hash", n.Hash), zap.Error(err))
+			resp.Errors++
+			continue
+		}
+		if isNew {
+			resp.New++
+		} else {
+			resp.Duplicate++
+		}
+	}
+
+	return c.JSON(resp)
 }
 
 // buildHistory constructs a HistoryResponse for the given node hash.
