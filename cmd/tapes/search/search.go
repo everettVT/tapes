@@ -10,11 +10,13 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
 	apisearch "github.com/papercomputeco/tapes/api/search"
+	"github.com/papercomputeco/tapes/pkg/cliui"
 	"github.com/papercomputeco/tapes/pkg/config"
 	"github.com/papercomputeco/tapes/pkg/logger"
 )
@@ -22,6 +24,7 @@ import (
 type searchCommander struct {
 	query string
 	topK  int
+	quiet bool
 
 	apiTarget string
 
@@ -38,10 +41,15 @@ query text. Requires a running Tapes API server with search configured
 For each result, the full session branch is displayed, including all ancestors
 (from root to matched node) and all descendants (from matched node to leaves).
 
+Use --quiet to output only leaf hashes, one per line. This is useful for piping
+into other commands like tapes skill generate.
+
 Example:
   tapes search "how to configure logging"
   tapes search "error handling patterns" --api-target http://localhost:8081
-  tapes search "how to configure logging" --top 10`
+  tapes search "how to configure logging" --top 10
+  tapes search "gum glow charm" --quiet
+  tapes skill generate $(tapes search "charm CLI" --quiet --top 1) --name charm-patterns`
 
 const searchShortDesc string = "Search session data"
 
@@ -85,6 +93,7 @@ func NewSearchCmd() *cobra.Command {
 
 	defaults := config.NewDefaultConfig()
 	cmd.Flags().IntVarP(&cmder.topK, "top", "k", 5, "Number of results to return")
+	cmd.Flags().BoolVarP(&cmder.quiet, "quiet", "q", false, "Output only leaf hashes, one per line (for piping)")
 	cmd.Flags().StringVar(&cmder.apiTarget, "api-target", defaults.Client.APITarget, "Tapes API server URL")
 
 	return cmd
@@ -93,59 +102,30 @@ func NewSearchCmd() *cobra.Command {
 func (c *searchCommander) run() error {
 	c.logger = logger.NewLogger(c.debug)
 	defer func() { _ = c.logger.Sync() }()
-	client := &http.Client{}
 
-	c.logger.Debug("searching via API",
-		zap.String("api_target", c.apiTarget),
-		zap.String("query", c.query),
-		zap.Int("topK", c.topK),
-	)
-
-	// Build the request URL
-	searchURL, err := url.Parse(c.apiTarget)
+	output, err := SearchAPI(c.apiTarget, c.query, c.topK)
 	if err != nil {
-		return fmt.Errorf("invalid API target URL: %w", err)
-	}
-	searchURL.Path = "/v1/search"
-	q := searchURL.Query()
-	q.Set("query", c.query)
-	q.Set("top_k", strconv.Itoa(c.topK))
-	searchURL.RawQuery = q.Encode()
-
-	c.logger.Debug("requesting search", zap.String("url", searchURL.String()))
-
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, searchURL.String(), nil)
-	if err != nil {
-		return fmt.Errorf("creating search request: %w", err)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to connect to Tapes API at %s: %w", c.apiTarget, err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("search request failed (HTTP %d): %s", resp.StatusCode, string(body))
-	}
-
-	var output apisearch.Output
-	if err := json.Unmarshal(body, &output); err != nil {
-		return fmt.Errorf("failed to parse search response: %w", err)
+		return err
 	}
 
 	if output.Count == 0 {
-		fmt.Println("No results found.")
+		if !c.quiet {
+			fmt.Println("No results found.")
+		}
 		return nil
 	}
 
-	// Print results header
-	fmt.Printf("\nSearch Results for: %q\n", output.Query)
-	fmt.Println(strings.Repeat("=", 60))
+	if c.quiet {
+		for _, result := range output.Results {
+			fmt.Println(LeafHash(result))
+		}
+		return nil
+	}
+
+	fmt.Printf("\n%s %s\n\n",
+		cliui.HeaderStyle.Render("Search Results for:"),
+		cliui.HashStyle.Render(fmt.Sprintf("%q", output.Query)),
+	)
 
 	for i, result := range output.Results {
 		c.printResult(i+1, result)
@@ -155,32 +135,107 @@ func (c *searchCommander) run() error {
 }
 
 func (c *searchCommander) printResult(rank int, result apisearch.Result) {
-	fmt.Printf("\n[%d] Score: %.4f\n", rank, result.Score)
-	fmt.Printf("    Hash: %s\n", result.Hash)
+	fmt.Printf("  %s  %s  %s\n",
+		cliui.RankStyle.Render(fmt.Sprintf("#%d", rank)),
+		cliui.ScoreStyle.Render(fmt.Sprintf("score: %.4f", result.Score)),
+		cliui.HashStyle.Render(result.Hash),
+	)
 
 	if result.Turns == 0 {
-		fmt.Println("    (No session found)")
+		fmt.Printf("  %s\n\n", cliui.DimStyle.Render("(no session found)"))
 		return
 	}
 
-	fmt.Printf("    Role: %s\n", result.Role)
-	fmt.Printf("    Preview: %s\n", result.Preview)
+	preview := result.Preview
+	if len(preview) > 80 {
+		preview = preview[:77] + "..."
+	}
+	preview = strings.ReplaceAll(preview, "\n", " ")
 
-	fmt.Printf("\n    Session (%d turns):\n", result.Turns)
+	fmt.Printf("  %s %s\n", cliui.RoleStyle.Render(result.Role+":"), cliui.PreviewStyle.Render(preview))
+	fmt.Printf("  %s\n", cliui.DimStyle.Render(fmt.Sprintf("%d turns", result.Turns)))
 
-	for _, turn := range result.Branch {
-		prefix := "    |-- "
-		if turn.Matched {
-			prefix = "    >>> " // Mark the matched node
+	if len(result.Branch) > 0 {
+		for _, turn := range result.Branch {
+			text := turn.Text
+			if text == "" {
+				text = "(no text content)"
+			}
+			if len(text) > 60 {
+				text = text[:57] + "..."
+			}
+			text = strings.ReplaceAll(text, "\n", " ")
+
+			if turn.Matched {
+				fmt.Printf("  %s %s %s %s\n",
+					cliui.MatchedStyle.Render(">>>"),
+					cliui.RoleStyle.Render("["+turn.Role+"]"),
+					cliui.PreviewStyle.Render(text),
+					cliui.DimStyle.Render(turn.Hash[:12]),
+				)
+			} else {
+				fmt.Printf("  %s %s %s %s\n",
+					cliui.BranchStyle.Render(" ├─"),
+					cliui.RoleStyle.Render("["+turn.Role+"]"),
+					cliui.BranchStyle.Render(text),
+					cliui.DimStyle.Render(turn.Hash[:12]),
+				)
+			}
 		}
-
-		text := turn.Text
-		if text == "" {
-			text = "(no text content)"
-		}
-
-		fmt.Printf("%s[%s] %s - %s\n", prefix, turn.Role, text, turn.Hash)
 	}
 
 	fmt.Println()
+}
+
+// SearchAPI calls the tapes search API and returns the parsed output.
+// Exported so other commands (e.g. skill generate --search) can reuse it.
+func SearchAPI(apiTarget, query string, topK int) (*apisearch.Output, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	searchURL, err := url.Parse(apiTarget)
+	if err != nil {
+		return nil, fmt.Errorf("invalid API target URL: %w", err)
+	}
+	searchURL.Path = "/v1/search"
+	q := searchURL.Query()
+	q.Set("query", query)
+	q.Set("top_k", strconv.Itoa(topK))
+	searchURL.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating search request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Tapes API at %s: %w", apiTarget, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("search request failed (HTTP %d): %s", resp.StatusCode, string(body))
+	}
+
+	var output apisearch.Output
+	if err := json.Unmarshal(body, &output); err != nil {
+		return nil, fmt.Errorf("failed to parse search response: %w", err)
+	}
+
+	return &output, nil
+}
+
+// LeafHash returns the leaf (last) hash from a search result's branch.
+// Falls back to the matched node hash if the branch is empty.
+func LeafHash(result apisearch.Result) string {
+	if len(result.Branch) > 0 {
+		return result.Branch[len(result.Branch)-1].Hash
+	}
+	return result.Hash
 }

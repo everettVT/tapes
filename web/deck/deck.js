@@ -46,6 +46,7 @@ const dayNextButton = document.getElementById("day-next");
 const dayDetailCloseButton = document.getElementById("day-detail-close");
 const heatmapHintEl = document.getElementById("heatmap-hint");
 const projectSelect = document.getElementById("project-select");
+const searchInput = document.getElementById("search-input");
 
 const modelColors = {
   claude: {
@@ -74,6 +75,37 @@ const filters = {
   project: "",
   period: "30d",
   periodEnabled: false,
+  search: "",
+};
+
+const debounce = (fn, ms) => {
+  let timer;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+};
+
+const getFilteredSessions = (sessions) => {
+  if (!filters.search) return sessions;
+  const term = filters.search.toLowerCase();
+  return sessions.filter((s) => s.label.toLowerCase().includes(term));
+};
+
+const updateSessionCount = (data) => {
+  const filtered = getFilteredSessions(data.sessions);
+  const countText = filters.search
+    ? `${filtered.length} of ${data.sessions.length} sessions`
+    : `${data.sessions.length} sessions`;
+  const filterBits = [];
+  if (filters.status) filterBits.push(`status ${filters.status}`);
+  if (filters.project) filterBits.push(`project ${filters.project}`);
+  if (filters.periodEnabled) {
+    const label = filters.period === "90d" ? "3M" : filters.period === "180d" ? "6M" : "30d";
+    filterBits.push(`period ${label}`);
+  }
+  const filterText = filterBits.length ? ` \u00B7 ${filterBits.join(" \u00B7 ")}` : "";
+  sessionCountEl.textContent = `${countText} \u00B7 ${formatDuration(data.total_duration_ns)} total time${filterText}`;
 };
 
 let overviewState = null;
@@ -92,7 +124,7 @@ let sessionEntryView = null;
 let heatmapSelectableDays = [];
 let activeAnalyticsTab = "activity";
 
-const formatCost = (value) => `$${value.toFixed(3)}`;
+const formatCost = (value) => `$${value.toFixed(2)}`;
 const formatTokens = (value) => {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
@@ -276,8 +308,10 @@ const renderModels = (data) => {
     return;
   }
 
-  const max = models[0].total_cost || 1;
-  models.forEach((model) => {
+  const maxModels = 5;
+  const topModels = models.slice(0, maxModels);
+  const max = topModels[0].total_cost || 1;
+  topModels.forEach((model) => {
     const row = document.createElement("div");
     row.className = "model-row";
 
@@ -455,13 +489,14 @@ const buildSessionRow = (session, index, onClick) => {
 
 const renderSessions = (data) => {
   sessionsEl.innerHTML = "";
-  if (!data.sessions.length) {
-    sessionsEl.textContent = "no sessions";
+  const filtered = getFilteredSessions(data.sessions);
+  if (!filtered.length) {
+    sessionsEl.textContent = filters.search ? `no sessions found: ${filters.search}` : "no sessions";
     sessionsMoreEl.hidden = true;
     return;
   }
 
-  const selectedIndex = data.sessions.findIndex((s) => s.id === selectedSessionId);
+  const selectedIndex = filtered.findIndex((s) => s.id === selectedSessionId);
   if (selectedIndex >= 0) {
     sessionIndex = selectedIndex;
   }
@@ -472,15 +507,15 @@ const renderSessions = (data) => {
     "<div>#</div><div>label</div><div>project</div><div>model</div><div>dur</div><div>tokens</div><div>cost</div><div>tools</div><div>msgs</div><div>status</div>";
   sessionsEl.appendChild(header);
 
-  const visible = data.sessions.slice(0, visibleSessionCount);
+  const visible = filtered.slice(0, visibleSessionCount);
   visible.forEach((session, index) => {
     const row = buildSessionRow(session, index, () => loadSession(session.id));
     sessionsEl.appendChild(row);
   });
 
-  if (data.sessions.length > visibleSessionCount) {
+  if (filtered.length > visibleSessionCount) {
     sessionsMoreEl.hidden = false;
-    showMoreButton.textContent = `show more (${visibleSessionCount}-${data.sessions.length} of ${data.sessions.length})`;
+    showMoreButton.textContent = `show more (${visibleSessionCount}-${filtered.length} of ${filtered.length})`;
   } else {
     sessionsMoreEl.hidden = true;
   }
@@ -1645,15 +1680,7 @@ const loadOverview = async () => {
   const res = await fetch(`/api/overview?${buildParams()}`);
   const data = await res.json();
   overviewState = data;
-  const filterBits = [];
-  if (filters.status) filterBits.push(`status ${filters.status}`);
-  if (filters.project) filterBits.push(`project ${filters.project}`);
-  if (filters.periodEnabled) {
-    const label = filters.period === "90d" ? "3M" : filters.period === "180d" ? "6M" : "30d";
-    filterBits.push(`period ${label}`);
-  }
-  const filterText = filterBits.length ? ` \u00B7 ${filterBits.join(" \u00B7 ")}` : "";
-  sessionCountEl.textContent = `${data.sessions.length} sessions \u00B7 ${formatDuration(data.total_duration_ns)} total time${filterText}`;
+  updateSessionCount(data);
   statusLabelEl.textContent = filters.status || "all";
 
   // Populate project dropdown from session data
@@ -1687,7 +1714,8 @@ const loadSession = async (sessionId, keepMessage) => {
     sessionEntryView = currentView;
   }
   selectedSessionId = sessionId;
-  const res = await fetch(`/api/session/${sessionId}`);
+  const encodedSessionId = encodeURIComponent(sessionId);
+  const res = await fetch(`/api/session/${encodedSessionId}`);
   const data = await res.json();
   sessionDetailState = data;
   if (!keepMessage) {
@@ -1699,8 +1727,8 @@ const loadSession = async (sessionId, keepMessage) => {
   }
   sessionBreadcrumbEl.textContent = data.summary.label;
   setView("session");
-  if (window.location.pathname !== `/session/${sessionId}`) {
-    window.history.pushState({}, "", `/session/${sessionId}`);
+  if (window.location.pathname !== `/session/${encodedSessionId}`) {
+    window.history.pushState({}, "", `/session/${encodedSessionId}`);
   }
 };
 
@@ -1747,8 +1775,10 @@ const backToOverview = () => {
 
 const moveSession = (delta) => {
   if (!overviewState || !overviewState.sessions.length) return;
-  sessionIndex = Math.min(Math.max(sessionIndex + delta, 0), overviewState.sessions.length - 1);
-  const session = overviewState.sessions[sessionIndex];
+  const filtered = getFilteredSessions(overviewState.sessions);
+  if (!filtered.length) return;
+  sessionIndex = Math.min(Math.max(sessionIndex + delta, 0), filtered.length - 1);
+  const session = filtered[sessionIndex];
   selectedSessionId = session.id;
   renderSessions(overviewState);
   const rows = sessionsEl.querySelectorAll(".sessions-row:not(.sessions-row--header)");
@@ -1829,8 +1859,11 @@ const handleKey = (event) => {
       }
       break;
     case "Enter":
-      if (currentView === "overview" && overviewState && overviewState.sessions[sessionIndex]) {
-        loadSession(overviewState.sessions[sessionIndex].id);
+      if (currentView === "overview" && overviewState) {
+        const filtered = getFilteredSessions(overviewState.sessions);
+        if (filtered[sessionIndex]) {
+          loadSession(filtered[sessionIndex].id);
+        }
       }
       break;
     case "a":
@@ -1866,6 +1899,13 @@ const handleKey = (event) => {
       if (currentView === "overview") {
         toggleFilters();
         if (filtersVisible) statusSelect.focus();
+      }
+      break;
+    case "/":
+      if (currentView === "overview") {
+        event.preventDefault();
+        if (!filtersVisible) toggleFilters();
+        searchInput.focus();
       }
       break;
     case "p":
@@ -1913,6 +1953,28 @@ statusSelect.addEventListener("change", () => {
 projectSelect.addEventListener("change", () => {
   filters.project = projectSelect.value;
   loadOverview();
+});
+
+const applySearch = debounce(() => {
+  if (overviewState) {
+    sessionIndex = 0;
+    renderSessions(overviewState);
+    updateSessionCount(overviewState);
+  }
+}, 150);
+
+searchInput.addEventListener("input", () => {
+  filters.search = searchInput.value;
+  applySearch();
+});
+
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    searchInput.value = "";
+    filters.search = "";
+    searchInput.blur();
+    applySearch();
+  }
 });
 
 showMoreButton.addEventListener("click", () => {
@@ -2080,7 +2142,7 @@ document.querySelectorAll(".analytics-tab").forEach((btn) => {
 
 window.addEventListener("popstate", () => {
   if (window.location.pathname.startsWith("/session/")) {
-    const sessionId = window.location.pathname.replace("/session/", "");
+    const sessionId = decodeURIComponent(window.location.pathname.replace("/session/", ""));
     if (sessionId) {
       loadSession(sessionId, true);
       return;
@@ -2096,7 +2158,7 @@ window.addEventListener("popstate", () => {
 });
 
 if (window.location.pathname.startsWith("/session/")) {
-  const sessionId = window.location.pathname.replace("/session/", "");
+  const sessionId = decodeURIComponent(window.location.pathname.replace("/session/", ""));
   if (sessionId) {
     loadSession(sessionId);
   }
